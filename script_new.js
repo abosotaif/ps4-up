@@ -452,6 +452,7 @@ class GamingCenterManager {
         this.devices = [];
         this.sessions = [];
         this.currentUser = null;
+        this.authToken = null; // إضافة token للمصادقة
         this.hourlyRates = {
             duo: 6000,  // 6000 ليرة سورية للساعة للزوجي
             quad: 8000  // 8000 ليرة سورية للساعة للرباعي
@@ -481,8 +482,77 @@ class GamingCenterManager {
         this.checkConnection();
         this.loadData();
         
-        // التحقق من حالة تسجيل الدخول المحفوظة
-        this.checkSavedLogin();
+        // التحقق من token المصادقة المحفوظ
+        this.checkSavedAuth();
+    }
+
+    // توليد token آمن للمصادقة
+    generateAuthToken(username) {
+        const timestamp = Date.now();
+        const randomString = Math.random().toString(36).substring(2, 15);
+        const tokenData = {
+            username: username,
+            timestamp: timestamp,
+            random: randomString
+        };
+        return btoa(JSON.stringify(tokenData));
+    }
+
+    // التحقق من صحة token
+    validateAuthToken(token) {
+        try {
+            const tokenData = JSON.parse(atob(token));
+            const now = Date.now();
+            const tokenAge = now - tokenData.timestamp;
+            
+            // Token صالح لمدة 7 أيام
+            const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 أيام بالميلي ثانية
+            
+            if (tokenAge > maxAge) {
+                console.log('Token منتهي الصلاحية');
+                return false;
+            }
+            
+            return tokenData.username === 'admin';
+        } catch (error) {
+            console.log('Token غير صالح:', error);
+            return false;
+        }
+    }
+
+    // حفظ token المصادقة
+    saveAuthToken(token) {
+        localStorage.setItem('gamingCenterAuthToken', token);
+        this.authToken = token;
+    }
+
+    // تحميل token المصادقة المحفوظ
+    loadAuthToken() {
+        const savedToken = localStorage.getItem('gamingCenterAuthToken');
+        if (savedToken && this.validateAuthToken(savedToken)) {
+            this.authToken = savedToken;
+            return true;
+        }
+        return false;
+    }
+
+    // حذف token المصادقة
+    clearAuthToken() {
+        localStorage.removeItem('gamingCenterAuthToken');
+        this.authToken = null;
+    }
+
+    // التحقق من المصادقة المحفوظة
+    checkSavedAuth() {
+        if (this.loadAuthToken()) {
+            console.log('تم العثور على token صالح، تسجيل دخول تلقائي');
+            this.currentUser = { username: 'admin' };
+            this.showMainScreen();
+            this.updateUI();
+        } else {
+            console.log('لا يوجد token صالح، عرض شاشة تسجيل الدخول');
+            this.showLoginScreen();
+        }
     }
 
     async checkConnection() {
@@ -922,18 +992,6 @@ class GamingCenterManager {
         }
     }
 
-    checkSavedLogin() {
-        // التحقق من وجود مستخدم محفوظ
-        if (this.currentUser) {
-            console.log('تم العثور على مستخدم محفوظ:', this.currentUser.username);
-            this.showMainScreen();
-            this.updateUI();
-        } else {
-            console.log('لا يوجد مستخدم محفوظ، عرض شاشة تسجيل الدخول');
-            this.showLoginScreen();
-        }
-    }
-
     initializeDefaultDevices() {
         const devices = [];
         for (let i = 1; i <= 6; i++) {
@@ -966,7 +1024,9 @@ class GamingCenterManager {
                 
                 if (result.success) {
                     this.currentUser = result.user;
-                    this.saveLocalData(); // حفظ حالة تسجيل الدخول
+                    // توليد وحفظ token المصادقة
+                    const authToken = this.generateAuthToken(username);
+                    this.saveAuthToken(authToken);
                     this.showMainScreen();
                     await this.loadData();
                 } else {
@@ -985,7 +1045,9 @@ class GamingCenterManager {
     handleLocalLogin(username, password) {
         if (username === 'admin' && password === 'admin123') {
             this.currentUser = { username, password };
-            this.saveLocalData(); // حفظ حالة تسجيل الدخول
+            // توليد وحفظ token المصادقة
+            const authToken = this.generateAuthToken(username);
+            this.saveAuthToken(authToken);
             this.showMainScreen();
             this.loadLocalData();
             this.updateUI();
@@ -996,6 +1058,8 @@ class GamingCenterManager {
 
     handleLogout() {
         this.currentUser = null;
+        // حذف token المصادقة
+        this.clearAuthToken();
         this.showLoginScreen();
         
         // إيقاف جميع العدادات
@@ -1014,9 +1078,6 @@ class GamingCenterManager {
         this.isUpdating = false;
         this.currentTimeUpSessionId = null;
         this.isAdminAuthenticated = false;
-        
-        // حذف بيانات تسجيل الدخول من التخزين المحلي
-        this.saveLocalData();
     }
 
     showLoginScreen() {
@@ -1179,7 +1240,7 @@ class GamingCenterManager {
             session_type: sessionType,
             time_limit: timeLimit,
             game_mode: gameMode,
-            start_time: new Date().toISOString(),
+            start_time: new Date().toLocaleString('sv-SE'), // استخدام المنطقة الزمنية المحلية
             end_time: null,
             is_active: true,
             total_cost: 0
@@ -1359,9 +1420,12 @@ class GamingCenterManager {
             const timeRemaining = Math.max(0, session.time_limit - elapsedMinutes);
             const timeRemainingSeconds = Math.max(0, (session.time_limit * 60) - elapsedSeconds);
             const remainingMinutes = Math.floor(timeRemainingSeconds / 60);
+            // إصلاح حساب الثواني المتبقية - يجب أن تكون من 0 إلى 59
             const remainingSeconds = timeRemainingSeconds % 60;
+            // إذا كانت الثواني 0 والدقائق > 0، نعرض 59 ثانية
+            const displaySeconds = (remainingSeconds === 0 && remainingMinutes > 0) ? 59 : remainingSeconds;
             document.getElementById('currentRemainingTime').textContent = 
-                this.formatTimeWithSeconds(remainingMinutes, remainingSeconds);
+                this.formatTimeWithSeconds(remainingMinutes, displaySeconds);
         } else {
             document.getElementById('currentRemainingTime').textContent = 'وقت مفتوح';
         }
@@ -1576,8 +1640,17 @@ class GamingCenterManager {
 
     // نظام تتبع الوقت المحسن
     initializeSessionTimeTracker(sessionId, startTime, timeLimit, gameMode) {
+        // تحويل startTime إلى Date object مع التعامل مع التنسيقات المختلفة
+        let startTimeDate;
+        if (typeof startTime === 'string') {
+            // إذا كان تنسيق ISO (UTC) أو تنسيق sv-SE (محلي)
+            startTimeDate = new Date(startTime);
+        } else {
+            startTimeDate = startTime;
+        }
+        
         this.sessionTimeTrackers.set(sessionId, {
-            startTime: new Date(startTime),
+            startTime: startTimeDate,
             originalTimeLimit: timeLimit,
             currentTimeLimit: timeLimit,
             gameMode: gameMode,
@@ -1612,13 +1685,10 @@ class GamingCenterManager {
         const totalElapsedMinutes = elapsed.minutes;
         const remainingMinutes = Math.max(0, tracker.currentTimeLimit - totalElapsedMinutes);
         
-        // حساب الثواني المتبقية في الدقيقة الحالية (من 0 إلى 59)
-        const remainingSeconds = elapsed.seconds === 0 ? 59 : 59 - elapsed.seconds;
-        
         return {
             minutes: remainingMinutes,
-            seconds: remainingSeconds, // الوقت المتبقي في الدقيقة الحالية (0-59)
-            totalSeconds: remainingMinutes * 60 + remainingSeconds
+            seconds: 60 - elapsed.seconds, // الوقت المتبقي في الدقيقة الحالية
+            totalSeconds: remainingMinutes * 60 + (60 - elapsed.seconds)
         };
     }
 
@@ -1735,7 +1805,7 @@ class GamingCenterManager {
         const startTime = new Date(session.start_time);
         const elapsedMinutes = Math.floor((endTime - startTime) / (1000 * 60));
         
-        session.end_time = endTime.toISOString();
+        session.end_time = endTime.toLocaleString('sv-SE'); // استخدام المنطقة الزمنية المحلية
         session.is_active = false;
         // حساب التكلفة النهائية وحفظها
         const finalCost = this.calculateCost(elapsedMinutes, session.game_mode);
@@ -1969,7 +2039,9 @@ class GamingCenterManager {
                     const timeRemainingSeconds = Math.max(0, (session.time_limit * 60) - elapsedSeconds);
                     const remainingMinutes = Math.floor(timeRemainingSeconds / 60);
                     const remainingSeconds = timeRemainingSeconds % 60;
-                    timeRemainingText = `<p><strong>الوقت المتبقي:</strong> <span class="time-remaining" data-session-id="${session.id}">${this.formatTimeWithSeconds(remainingMinutes, remainingSeconds)}</span></p>`;
+                    // إصلاح حساب الثواني المتبقية - يجب أن تكون من 0 إلى 59
+                    const displaySeconds = (remainingSeconds === 0 && remainingMinutes > 0) ? 59 : remainingSeconds;
+                    timeRemainingText = `<p><strong>الوقت المتبقي:</strong> <span class="time-remaining" data-session-id="${session.id}">${this.formatTimeWithSeconds(remainingMinutes, displaySeconds)}</span></p>`;
                     
                     // إضافة كلاس للتنبيه عند انتهاء الوقت
                     if (timeRemaining <= 0) {
@@ -2920,16 +2992,16 @@ class GamingCenterManager {
     }
 
     loadPricingSettings() {
-        // تحميل الأسعار الحالية في حقول الإدخال
-        document.getElementById('duoPriceInput').value = this.hourlyRates.duo;
-        document.getElementById('quadPriceInput').value = this.hourlyRates.quad;
+        // تحميل الأسعار الحالية
+        document.getElementById('duoPrice').value = this.hourlyRates.duo;
+        document.getElementById('quadPrice').value = this.hourlyRates.quad;
         
         // تحديث أزرار نمط اللعب
         this.updateGameModeButtons();
     }
 
     async updatePricing(gameMode) {
-        const priceInput = document.getElementById(`${gameMode}PriceInput`);
+        const priceInput = document.getElementById(`${gameMode}Price`);
         const newPrice = parseInt(priceInput.value);
         
         if (!newPrice || newPrice < 1000 || newPrice > 50000) {
